@@ -2,80 +2,59 @@ const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http);
+const path = require('path');
 
-app.use(express.static('public'));
+// ★ここが超重要！Render上でpublicフォルダを正しく読み込ませる設定
+app.use(express.static(path.join(__dirname, 'public')));
 
-// ルームの情報を保存するオブジェクト
-let rooms = {};
+// URLにアクセスしたときに、publicの中のindex.htmlを確実に返す設定
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
+// Socket.ioの通信処理（部屋の入退室など）
 io.on('connection', (socket) => {
-    console.log('ユーザーが接続しました:', socket.id);
+    console.log('ユーザーが接続しました');
 
-    // 部屋に入る、または新しく作る
-    socket.on('joinRoom', ({ roomId, username }) => {
+    socket.on('join-room', (roomId, username) => {
         socket.join(roomId);
-        if (!rooms[roomId]) {
-            rooms[roomId] = { players: {}, answerLocation: null, gameStarted: false };
-        }
-        rooms[roomId].players[socket.id] = { username, score: 0, distance: null, guessed: false };
+        socket.username = username;
+        socket.roomId = roomId;
         
-        // 部屋のみんなに現在のプレイヤーリストを通知
-        io.to(roomId).emit('roomData', { players: rooms[roomId].players, gameStarted: rooms[roomId].gameStarted });
-    });
-
-    // ホストがゲームを開始して、全員に同じ「正解の座標」を送りつける
-    socket.on('hostStartGame', ({ roomId, location, settings }) => {
-        if (rooms[roomId]) {
-            rooms[roomId].answerLocation = location;
-            rooms[roomId].gameStarted = true;
-            rooms[roomId].settings = settings;
-            
-            // 全プレイヤーの予想状態をリセット
-            for (let id in rooms[roomId].players) {
-                rooms[roomId].players[id].guessed = false;
-                rooms[roomId].players[id].distance = null;
-            }
-
-            // 部屋の全員にゲーム開始の合図と座標、ルールを送る
-            io.to(roomId).emit('gameStarted', { location, settings });
-        }
-    });
-
-    // 誰かが「ここに決めた！」を押して予想を送ってきたとき
-    socket.on('submitGuess', ({ roomId, distance, score }) => {
-        if (rooms[roomId] && rooms[roomId].players[socket.id]) {
-            rooms[roomId].players[socket.id].guessed = true;
-            rooms[roomId].players[socket.id].distance = distance;
-            rooms[roomId].players[socket.id].score = score;
-
-            // 全員が予想し終わったかチェック
-            const allPlayers = Object.values(rooms[roomId].players);
-            const allGuessed = allPlayers.every(p => p.guessed);
-
-            if (allGuessed) {
-                // 全員終わったら結果発表モードへ
-                io.to(roomId).emit('gameFinished', { players: rooms[roomId].players, answerLocation: rooms[roomId].answerLocation });
-                rooms[roomId].gameStarted = false; // ルームの状態を戻す
-            } else {
-                // まだの人がいれば、現在の状況（誰が投票済か）だけ更新
-                io.to(roomId).emit('roomData', { players: rooms[roomId].players, gameStarted: true });
+        // 部屋のメンバー一覧を取得して全員に通知
+        const clients = io.sockets.adapter.rooms.get(roomId);
+        const users = [];
+        if (clients) {
+            for (const clientId of clients) {
+                const clientSocket = io.sockets.sockets.get(clientId);
+                if (clientSocket && clientSocket.username) {
+                    users.push(clientSocket.username);
+                }
             }
         }
+        io.to(roomId).emit('room-users', users);
     });
 
-    // 切断されたとき
     socket.on('disconnect', () => {
-        for (let roomId in rooms) {
-            if (rooms[roomId].players[socket.id]) {
-                delete rooms[roomId].players[socket.id];
-                io.to(roomId).emit('roomData', { players: rooms[roomId].players, gameStarted: rooms[roomId].gameStarted });
+        if (socket.roomId) {
+            const roomId = socket.roomId;
+            const clients = io.sockets.adapter.rooms.get(roomId);
+            const users = [];
+            if (clients) {
+                for (const clientId of clients) {
+                    const clientSocket = io.sockets.sockets.get(clientId);
+                    if (clientSocket && clientSocket.username) {
+                        users.push(clientSocket.username);
+                    }
+                }
             }
+            io.to(roomId).emit('room-users', users);
         }
-        console.log('ユーザーが切断しました:', socket.id);
     });
 });
 
-const PORT = 3000;
+// Renderのポート（環境変数）に対応させる設定
+const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
-    console.log(`サーバーが起動したよ！ http://localhost:${PORT}`);
+    console.log(`サーバーが起動したよ！ ポート: ${PORT}`);
 });
