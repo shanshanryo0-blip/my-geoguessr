@@ -1,198 +1,60 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <title>マルチプレイ・日本限定ジオゲッサー</title>
-    <style>
-        body { margin: 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #1a1a1a; color: #fff; }
-        #setup-screen, #lobby-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 20px; box-sizing: border-box; }
-        .setup-box { background: #2a2a2a; padding: 30px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); width: 100%; max-width: 500px; text-align: center; }
-        .form-group { margin-bottom: 20px; text-align: left; }
-        label { display: block; margin-bottom: 8px; font-weight: bold; color: #aaa; }
-        select, input, button { width: 100%; padding: 12px; border-radius: 6px; border: none; font-size: 16px; box-sizing: border-box; }
-        select, input { background: #444; color: white; }
-        button { background: #4CAF50; color: white; font-weight: bold; cursor: pointer; transition: 0.2s; margin-top: 10px; }
-        button:hover { background: #45a049; }
-        #game-screen { display: none; height: 100%; flex-direction: column; }
-        #header { height: 60px; background: #222; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; box-sizing: border-box; }
-        #timer { font-size: 24px; font-weight: bold; color: #ffeb3b; }
-        #game-container { display: flex; flex: 1; height: calc(100% - 60px); position: relative; }
-        #streetview { width: 50%; height: 100%; }
-        #map { width: 50%; height: 100%; }
-        #guess-btn { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 200px; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-        #status-message { font-size: 18px; font-weight: bold; }
-        ul { list-style: none; padding: 0; text-align: left; }
-        li { padding: 8px; background: #333; margin-bottom: 5px; border-radius: 4px; }
-    </style>
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAmoJ4weKfDmCOSMDsvbngJaM9pqB-pz4g&libraries=geometry"></script>
-</head>
-<body>
+const express = require('express');
+const app = express();
+const http = require('http').createServer(app);
+const io = require('socket.io')(http);
+const path = require('path');
 
-    <div id="setup-screen">
-        <div class="setup-box">
-            <h1>🗾 リアルタイム・ジオゲッサー</h1>
-            <div class="form-group"><label>ユーザー名</label><input type="text" id="username-input" value="プレイヤー1"></div>
-            <div class="form-group"><label>ルームID（同じ文字を入れた人と繋がるよ）</label><input type="text" id="room-input" value="room123"></div>
-            <button onclick="joinRoom()">ロビーに入る</button>
-        </div>
-    </div>
+// Render上でpublicフォルダを正しく読み込ませる設定
+app.use(express.static(path.join(__dirname, 'public')));
 
-    <div id="lobby-screen" style="display: none;">
-        <div class="setup-box">
-            <h2>部屋: <span id="display-room-id"></span></h2>
-            <h3>参加メンバー:</h3>
-            <ul id="player-list"></ul>
-            
-            <hr style="border-color: #444; margin-top:20px; margin-bottom: 20px;">
-            <h3>🛠️ ホスト用ルール設定</h3>
-            <div class="form-group">
-                <label>エリア</label>
-                <select id="area-select">
-                    <option value="JAPAN">日本全国</option>
-                    <option value="KANAGAWA">神奈川県</option>
-                    <option value="TOKYO">東京都</option>
-                    <option value="OKINAWA">沖縄県</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>制限時間</label>
-                <select id="time-select"><option value="0">なし</option><option value="30">30秒</option><option value="60">1分</option></select>
-            </div>
-            <div class="form-group">
-                <label>移動制限</label>
-                <select id="move-select"><option value="normal">通常</option><option value="no-move">移動禁止</option><option value="fixed">完全固定</option></select>
-            </div>
-            <button onclick="hostStartGame()" style="background: #008CBA;">全員でゲームスタート！</button>
-        </div>
-    </div>
+// URLにアクセスしたときに、publicの中のindex.htmlを確実に返す設定
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
-    <div id="game-screen">
-        <div id="header">
-            <div id="status-message">他のプレイヤーを待っています...</div>
-            <div id="timer">--:--</div>
-            <div><button id="retry-btn" style="padding: 5px 10px; font-size: 14px; display:none;" onclick="location.reload()">ロビーに戻る</button></div>
-        </div>
-        <div id="game-container">
-            <div id="streetview"></div>
-            <div id="map"></div>
-            <button id="guess-btn" onclick="submitGuess()" disabled>ここに決めた！</button>
-        </div>
-    </div>
+// Socket.ioの通信処理（部屋の入退室など）
+io.on('connection', (socket) => {
+    console.log('ユーザーが接続しました');
 
-    <script>
-        const socket = io();
-        let roomId, username;
-        let panorama, map, guessMarker, answerLocation;
-        let timerInterval, timeLeft = 0;
-
-        const areaBounds = {
-            "JAPAN": { center: {lat: 36.2048, lng: 138.2529}, radius: 5.0 },
-            "KANAGAWA": { center: {lat: 35.447, lng: 139.413}, radius: 0.3 }, 
-            "TOKYO": { center: {lat: 35.689, lng: 139.692}, radius: 0.2 },
-            "OKINAWA": { center: {lat: 26.212, lng: 127.681}, radius: 0.4 }
-        };
-
-        function joinRoom() {
-            username = document.getElementById('username-input').value;
-            roomId = document.getElementById('room-input').value;
-            document.getElementById('setup-screen').style.display = 'none';
-            document.getElementById('lobby-screen').style.display = 'flex';
-            document.getElementById('display-room-id').innerText = roomId;
-
-            socket.emit('join-room', roomId, username);
-        }
-
-        socket.on('room-users', (users) => {
-            const list = document.getElementById('player-list');
-            list.innerHTML = '';
-            users.forEach(user => {
-                const li = document.createElement('li');
-                li.innerText = `${user} ⏳ 待機中...`;
-                list.appendChild(li);
-            });
-        });
-
-        function hostStartGame() {
-            const areaKey = document.getElementById('area-select').value;
-            const settings = {
-                time: parseInt(document.getElementById('time-select').value),
-                move: document.getElementById('move-select').value,
-                area: areaKey
-            };
-            findRandomStreetView(areaKey, settings);
-        }
-
-        function findRandomStreetView(areaKey, settings) {
-            const svService = new google.maps.StreetViewService();
-            const bounds = areaBounds[areaKey];
-            const randomLat = bounds.center.lat + (Math.random() - 0.5) * bounds.radius * 2;
-            const randomLng = bounds.center.lng + (Math.random() - 0.5) * bounds.radius * 2;
-            const searchPoint = new google.maps.LatLng(randomLat, randomLng);
-
-            svService.getPanorama({ location: searchPoint, radius: 5000, source: google.maps.StreetViewSource.OUTDOOR }, (data, status) => {
-                if (status === google.maps.StreetViewStatus.OK) {
-                    // 【修正】一番エラーが起きない確実な方法で座標をオブジェクトに変換
-                    const coords = data.location.latLng.toJSON(); 
-                    
-                    // アラートを消して、直接ゲーム開始処理に安全なデータを渡す
-                    initGameScreen(coords, settings);
-                } else {
-                    findRandomStreetView(areaKey, settings);
+    socket.on('join-room', (roomId, username) => {
+        socket.join(roomId);
+        socket.username = username;
+        socket.roomId = roomId;
+        
+        // 部屋のメンバー一覧を取得して全員に通知
+        const clients = io.sockets.adapter.rooms.get(roomId);
+        const users = [];
+        if (clients) {
+            for (const clientId of clients) {
+                const clientSocket = io.sockets.sockets.get(clientId);
+                if (clientSocket && clientSocket.username) {
+                    users.push(clientSocket.username);
                 }
-            });
-        }
-
-        function initGameScreen(location, settings) {
-            document.getElementById('lobby-screen').style.display = 'none';
-            document.getElementById('game-screen').style.display = 'flex';
-            document.getElementById('status-message').innerText = "場所を特定せよ！";
-            document.getElementById('guess-btn').disabled = false;
-            
-            answerLocation = new google.maps.LatLng(location.lat, location.lng);
-
-            panorama = new google.maps.StreetViewPanorama(document.getElementById('streetview'), {
-                position: answerLocation, addressControl: false, showRoadLabels: false,
-                clickToGo: (settings.move === 'normal'), linksControl: (settings.move === 'normal'),
-                panControl: (settings.move !== 'fixed'), zoomControl: (settings.move !== 'fixed')
-            });
-
-            map = new google.maps.Map(document.getElementById('map'), {
-                center: areaBounds[settings.area].center, zoom: (settings.area === 'JAPAN') ? 5 : 10
-            });
-
-            if (guessMarker) guessMarker.setMap(null);
-            map.addListener('click', (e) => {
-                if (guessMarker) guessMarker.setMap(null);
-                guessMarker = new google.maps.Marker({ position: e.latLng, map: map });
-            });
-
-            if (settings.time > 0) {
-                timeLeft = settings.time;
-                clearInterval(timerInterval);
-                timerInterval = setInterval(() => {
-                    timeLeft--;
-                    const min = Math.floor(timeLeft / 60); const sec = timeLeft % 60;
-                    document.getElementById('timer').innerText = `${min}:${sec < 10 ? '0' : ''}${sec}`;
-                    if (timeLeft <= 0) { clearInterval(timerInterval); submitGuess(); }
-                }, 1000);
-            } else {
-                document.getElementById('timer').innerText = "無限";
             }
         }
+        io.to(roomId).emit('room-users', users);
+    });
 
-        function submitGuess() {
-            document.getElementById('guess-btn').disabled = true;
-            clearInterval(timerInterval);
-            document.getElementById('status-message').innerText = "回答を送信しました！";
+    socket.on('disconnect', () => {
+        if (socket.roomId) {
+            const roomId = socket.roomId;
+            const clients = io.sockets.adapter.rooms.get(roomId);
+            const users = [];
+            if (clients) {
+                for (const clientId of clients) {
+                    const clientSocket = io.sockets.sockets.get(clientId);
+                    if (clientSocket && clientSocket.username) {
+                        users.push(clientSocket.username);
+                    }
+                }
+            }
+            io.to(roomId).emit('room-users', users);
+        }
+    });
+});
 
-            let p2 = answerLocation;
-            if (guessMarker) p2 = guessMarker.getPosition();
-
-            const distance = google.maps.geometry.spherical.computeDistanceBetween(answerLocation, p2);
-            let score = Math.max(0, Math.round(5000 * Math.exp(-distance / 50000)));
-            if (!guessMarker) score = 0;
-
-            document.getElementById('retry-btn').style.display = 'inline-block';
-            new google.maps.Marker({ position: answerLocation, map: map });
-            document.getElementById('status-message').innerText = `【結果】あなたの得点: ${score}点
+// Renderのポート（環境変数）に対応させる設定
+const PORT = process.env.PORT || 3000;
+http.listen(PORT, () => {
+    console.log(`サーバーが起動したよ！ ポート: ${PORT}`);
+});
