@@ -100,11 +100,9 @@
             document.getElementById('lobby-screen').style.display = 'flex';
             document.getElementById('display-room-id').innerText = roomId;
 
-            // サーバーの「join-room」イベントに合わせる
             socket.emit('join-room', roomId, username);
         }
 
-        // サーバーから送られてくるメンバー一覧を受信
         socket.on('room-users', (users) => {
             const list = document.getElementById('player-list');
             list.innerHTML = '';
@@ -134,13 +132,67 @@
 
             svService.getPanorama({ location: searchPoint, radius: 5000, source: google.maps.StreetViewSource.OUTDOOR }, (data, status) => {
                 if (status === google.maps.StreetViewStatus.OK) {
-                    // 追加：ゲーム開始の電波を正しく送信する処理
-                    alert("ゲームを開始します！マップを読み込み中...");
+                    // 【修正】一番エラーが起きない確実な方法で座標をオブジェクトに変換
+                    const coords = data.location.latLng.toJSON(); 
+                    
+                    // アラートを消して、直接ゲーム開始処理に安全なデータを渡す
+                    initGameScreen(coords, settings);
                 } else {
                     findRandomStreetView(areaKey, settings);
                 }
             });
         }
-    </script>
-</body>
-</html>
+
+        function initGameScreen(location, settings) {
+            document.getElementById('lobby-screen').style.display = 'none';
+            document.getElementById('game-screen').style.display = 'flex';
+            document.getElementById('status-message').innerText = "場所を特定せよ！";
+            document.getElementById('guess-btn').disabled = false;
+            
+            answerLocation = new google.maps.LatLng(location.lat, location.lng);
+
+            panorama = new google.maps.StreetViewPanorama(document.getElementById('streetview'), {
+                position: answerLocation, addressControl: false, showRoadLabels: false,
+                clickToGo: (settings.move === 'normal'), linksControl: (settings.move === 'normal'),
+                panControl: (settings.move !== 'fixed'), zoomControl: (settings.move !== 'fixed')
+            });
+
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: areaBounds[settings.area].center, zoom: (settings.area === 'JAPAN') ? 5 : 10
+            });
+
+            if (guessMarker) guessMarker.setMap(null);
+            map.addListener('click', (e) => {
+                if (guessMarker) guessMarker.setMap(null);
+                guessMarker = new google.maps.Marker({ position: e.latLng, map: map });
+            });
+
+            if (settings.time > 0) {
+                timeLeft = settings.time;
+                clearInterval(timerInterval);
+                timerInterval = setInterval(() => {
+                    timeLeft--;
+                    const min = Math.floor(timeLeft / 60); const sec = timeLeft % 60;
+                    document.getElementById('timer').innerText = `${min}:${sec < 10 ? '0' : ''}${sec}`;
+                    if (timeLeft <= 0) { clearInterval(timerInterval); submitGuess(); }
+                }, 1000);
+            } else {
+                document.getElementById('timer').innerText = "無限";
+            }
+        }
+
+        function submitGuess() {
+            document.getElementById('guess-btn').disabled = true;
+            clearInterval(timerInterval);
+            document.getElementById('status-message').innerText = "回答を送信しました！";
+
+            let p2 = answerLocation;
+            if (guessMarker) p2 = guessMarker.getPosition();
+
+            const distance = google.maps.geometry.spherical.computeDistanceBetween(answerLocation, p2);
+            let score = Math.max(0, Math.round(5000 * Math.exp(-distance / 50000)));
+            if (!guessMarker) score = 0;
+
+            document.getElementById('retry-btn').style.display = 'inline-block';
+            new google.maps.Marker({ position: answerLocation, map: map });
+            document.getElementById('status-message').innerText = `【結果】あなたの得点: ${score}点
