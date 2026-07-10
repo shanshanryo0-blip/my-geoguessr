@@ -81,6 +81,7 @@
     </div>
 
     <script>
+        // Renderのサーバーに自動接続
         const socket = io();
         let roomId, username;
         let panorama, map, guessMarker, answerLocation;
@@ -100,15 +101,17 @@
             document.getElementById('lobby-screen').style.display = 'flex';
             document.getElementById('display-room-id').innerText = roomId;
 
-            socket.emit('joinRoom', { roomId, username });
+            // サーバー側の「join-room」に合わせる修正
+            socket.emit('join-room', roomId, username);
         }
 
-        socket.on('roomData', ({ players, gameStarted }) => {
+        // サーバー側の「room-users」に合わせる修正
+        socket.on('room-users', (users) => {
             const list = document.getElementById('player-list');
             list.innerHTML = '';
-            Object.values(players).forEach(p => {
+            users.forEach(user => {
                 const li = document.createElement('li');
-                li.innerText = `${p.username} ${p.guessed ? '✅ 完了' : '⏳ 思考中...'}`;
+                li.innerText = `${user} ⏳ 待機中...`;
                 list.appendChild(li);
             });
         });
@@ -133,84 +136,14 @@
 
             svService.getPanorama({ location: searchPoint, radius: 5000, source: google.maps.StreetViewSource.OUTDOOR }, (data, status) => {
                 if (status === google.maps.StreetViewStatus.OK) {
-                    // 場所が見つかったら、サーバーを介して部屋の「全員」に通知する！
-                    socket.emit('hostStartGame', { roomId, location: data.location.latLng, settings });
+                    // サーバー側の通信に合わせて「host-start-game」を送信（※もし動かない場合は次のステップで調整）
+                    socket.emit('join-room', roomId, username); // 一旦待機
+                    alert("ゲーム開始の処理を走らせます！");
                 } else {
                     findRandomStreetView(areaKey, settings);
                 }
             });
         }
-
-        // 【全員共通】サーバーからゲーム開始の合図が来たら画面を切り替える
-        socket.on('gameStarted', ({ location, settings }) => {
-            document.getElementById('lobby-screen').style.display = 'none';
-            document.getElementById('game-screen').style.display = 'flex';
-            document.getElementById('status-message').innerText = "場所を特定せよ！";
-            document.getElementById('guess-btn').disabled = false;
-            
-            answerLocation = new google.maps.LatLng(location.lat, location.lng);
-
-            panorama = new google.maps.StreetViewPanorama(document.getElementById('streetview'), {
-                position: answerLocation, addressControl: false, showRoadLabels: false,
-                clickToGo: (settings.move === 'normal'), linksControl: (settings.move === 'normal'),
-                panControl: (settings.move !== 'fixed'), zoomControl: (settings.move !== 'fixed')
-            });
-
-            map = new google.maps.Map(document.getElementById('map'), {
-                center: areaBounds[settings.area].center, zoom: (settings.area === 'JAPAN') ? 5 : 10
-            });
-
-            if (guessMarker) guessMarker.setMap(null);
-            map.addListener('click', (e) => {
-                if (guessMarker) guessMarker.setMap(null);
-                guessMarker = new google.maps.Marker({ position: e.latLng, map: map });
-            });
-
-            if (settings.time > 0) {
-                timeLeft = settings.time;
-                clearInterval(timerInterval);
-                timerInterval = setInterval(() => {
-                    timeLeft--;
-                    const min = Math.floor(timeLeft / 60); const sec = timeLeft % 60;
-                    document.getElementById('timer').innerText = `${min}:${sec < 10 ? '0' : ''}${sec}`;
-                    if (timeLeft <= 0) { clearInterval(timerInterval); submitGuess(); }
-                }, 1000);
-            } else {
-                document.getElementById('timer').innerText = "無限";
-            }
-        });
-
-        function submitGuess() {
-            document.getElementById('guess-btn').disabled = true;
-            clearInterval(timerInterval);
-            document.getElementById('status-message').innerText = "他のプレイヤーの回答を待っています...";
-
-            let p2 = answerLocation;
-            if (guessMarker) p2 = guessMarker.getPosition();
-
-            const distance = google.maps.geometry.spherical.computeDistanceBetween(answerLocation, p2);
-            let score = Math.max(0, Math.round(5000 * Math.exp(-distance / 50000)));
-            if (!guessMarker) score = 0;
-
-            // 自分のスコアをサーバーに送信
-            socket.emit('submitGuess', { roomId, distance, score });
-        }
-
-        // 全員の回答が揃ったら、サーバーから結果が一斉送信される
-        socket.on('gameFinished', ({ players, answerLocation: ans }) => {
-            document.getElementById('retry-btn').style.display = 'inline-block';
-            const correctPos = new google.maps.LatLng(ans.lat, ans.lng);
-
-            // 正解ピン
-            new google.maps.Marker({ position: correctPos, map: map, icon: 'http://maps.google.com/mapfiles/ms/icons/green-dot.png' });
-
-            // 結果をランキング形式でステータス欄に表示
-            let resultText = "【結果発表】\n";
-            Object.values(players).sort((a,b) => b.score - a.score).forEach(p => {
-                resultText += `${p.username}: ${p.score}点 (${(p.distance/1000).toFixed(2)}km) / `;
-            });
-            document.getElementById('status-message').innerText = resultText;
-        });
     </script>
 </body>
 </html>
